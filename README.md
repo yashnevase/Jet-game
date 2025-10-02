@@ -10,9 +10,12 @@ In the project directory, you can run:
 
 Runs the app in the development mode.\
 Open [http://localhost:3000](http://localhost:3000) to view it in your browser.
+
+
+<img width="623" height="932" alt="Desktop Screenshot 2025 10 02 - 13 37 11 53" src="https://github.com/user-attachments/assets/39d087cc-0542-476c-9bf6-aa360785f0a8" />
 <img width="618" height="937" alt="Desktop Screenshot 2025 10 02 - 13 37 02 02" src="https://github.com/user-attachments/assets/005c72f4-2b4e-4d5b-b5e0-966997fe1aa8" />
 <img width="626" height="929" alt="Desktop Screenshot 2025 10 02 - 13 37 32 82" src="https://github.com/user-attachments/assets/8fe907b0-c87c-45ad-bd7f-b3c7c4b6b60a" />
-<img width="623" height="932" alt="Desktop Screenshot 2025 10 02 - 13 37 11 53" src="https://github.com/user-attachments/assets/39d087cc-0542-476c-9bf6-aa360785f0a8" />
+
 
 The page will reload when you make changes.\
 You may also see any lint errors in the console.
