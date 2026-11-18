@@ -1,0 +1,482 @@
+/* The palette is driven by the game: it sets these variables whenever the rank/palette changes. */
+@property --dark  { syntax: '<color>'; inherits: true; initial-value: #111418; }
+@property --mid   { syntax: '<color>'; inherits: true; initial-value: #3d4853; }
+@property --light { syntax: '<color>'; inherits: true; initial-value: #f1f5f9; }
+@property --hot   { syntax: '<color>'; inherits: true; initial-value: #ffb703; }
+
+:root {
+  --dark: #0b0e11;
+  --mid: #3d4853;
+  --light: #f1f5f9;
+  --hot: #ffb000;
+  transition: --dark 0.6s, --mid 0.6s, --light 0.6s, --hot 0.6s;
+  font-family: 'Chakra Petch', 'Rajdhani', 'Share Tech Mono', -apple-system, sans-serif;
+  color: var(--light);
+}
+
+* { box-sizing: border-box; }
+html, body, #root { margin: 0; height: 100%; background: var(--dark); overflow: hidden; overscroll-behavior: none; }
+body { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+button { font: inherit; color: inherit; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+:focus-visible { outline: 2px solid var(--hot); outline-offset: 2px; }
+
+.stage { position: relative; width: 100%; height: 100dvh; overflow: hidden; touch-action: none; }
+/* High-DPI crisp vector canvas */
+.view { position: absolute; inset: 0; width: 100%; height: 100%; display: block; image-rendering: auto; }
+
+/* ── technical grid overlay in menu ─ */
+.menu {
+  position: absolute; left: clamp(20px, 6vw, 80px); bottom: clamp(24px, 8vh, 80px);
+  max-width: min(92vw, 580px);
+  background: color-mix(in srgb, var(--dark) 88%, transparent);
+  border: 1px solid color-mix(in srgb, var(--light) 25%, transparent);
+  padding: clamp(18px, 3.2vw, 32px);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 12px 40px rgba(0,0,0,0.5), inset 0 0 0 1px color-mix(in srgb, var(--hot) 25%, transparent);
+}
+.menu::before {
+  content: "SYS.TELEM // FLANKER TACTICAL SU-30 AERO // MIL-STD-810";
+  display: block; font-size: 11px; letter-spacing: 0.18em; color: var(--hot);
+  margin-bottom: 8px; opacity: 0.9; font-family: 'Share Tech Mono', monospace;
+}
+h1 {
+  margin: 0; font-size: clamp(44px, 9vw, 86px); line-height: 0.92; font-weight: 900; letter-spacing: -0.01em;
+  color: var(--light); text-transform: uppercase;
+  text-shadow: 2px 2px 0 var(--dark), 0 0 16px color-mix(in srgb, var(--light) 30%, transparent);
+}
+.tag {
+  margin: 12px 0 18px; font-size: clamp(12px, 2vw, 15px); font-weight: 600;
+  color: color-mix(in srgb, var(--light) 85%, transparent);
+  letter-spacing: 0.08em;
+  border-left: 3px solid var(--hot); padding-left: 10px;
+}
+.best { margin: 10px 0 0; font-weight: 700; color: var(--hot); letter-spacing: 0.12em; text-transform: uppercase; font-size: 13px; font-family: 'Share Tech Mono', monospace; }
+.keys { margin: 16px 0 0; font-size: 11.5px; color: var(--light); opacity: 0.9; line-height: 1.8; letter-spacing: 0.04em; }
+.keys b { background: color-mix(in srgb, var(--mid) 40%, var(--dark)); border: 1px solid var(--mid); padding: 1px 6px; margin-right: 4px; font-size: 10.5px; }
+
+/* ── Tactical Ordnance Badges Strip in Menu ── */
+.ordnance-strip {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 14px 0 16px;
+  padding: 10px 14px;
+  background: color-mix(in srgb, var(--dark) 70%, transparent);
+  border: 1px solid color-mix(in srgb, var(--mid) 50%, transparent);
+  border-left: 3px solid var(--hot);
+}
+.ord-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+.ord-tag {
+  font-family: 'Share Tech Mono', monospace;
+  font-weight: 700;
+  font-size: 11px;
+  padding: 1px 6px;
+  background: color-mix(in srgb, var(--mid) 40%, var(--dark));
+  border: 1px solid var(--mid);
+  color: var(--light);
+}
+.ord-tag.hot {
+  color: var(--hot);
+  border-color: color-mix(in srgb, var(--hot) 60%, transparent);
+  background: color-mix(in srgb, var(--hot) 15%, var(--dark));
+}
+.ord-name {
+  flex: 1;
+  color: var(--light);
+  opacity: 0.95;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+.ord-key {
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 11px;
+  color: var(--hot);
+  background: color-mix(in srgb, var(--dark) 90%, black);
+  border: 1px solid color-mix(in srgb, var(--light) 25%, transparent);
+  padding: 2px 7px;
+  border-radius: 2px;
+}
+.sub-hint {
+  margin: 10px 0 0;
+  font-size: 11px;
+  color: var(--hot);
+  letter-spacing: 0.05em;
+  font-weight: 600;
+}
+.btn.pulse {
+  animation: pulseBtn 2.2s infinite ease-in-out;
+}
+@keyframes pulseBtn {
+  0%, 100% { box-shadow: 3px 3px 0 var(--hot); }
+  50% { box-shadow: 0 0 18px var(--hot), 3px 3px 0 var(--hot); }
+}
+
+.row { display: flex; flex-wrap: wrap; gap: 10px; }
+.btn {
+  background: color-mix(in srgb, var(--dark) 90%, transparent);
+  border: 1px solid var(--light); padding: 10px 22px; min-height: 44px;
+  font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; font-size: 13px;
+  box-shadow: 2px 2px 0 var(--mid); transition: all 0.12s cubic-bezier(0.16, 1, 0.3, 1);
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+}
+.btn.big {
+  background: var(--light); color: var(--dark); border-color: var(--light);
+  font-size: 15px; font-weight: 900; padding: 12px 34px;
+  box-shadow: 3px 3px 0 var(--hot);
+}
+.btn:hover { transform: translate(-1px, -1px); box-shadow: 4px 4px 0 var(--hot); border-color: var(--hot); }
+.btn:active { transform: translate(2px, 2px); box-shadow: 0 0 0; }
+
+/* ── cards (pause, game over) ─────── */
+.card {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  width: min(92vw, 480px); padding: 30px; text-align: center;
+  background: color-mix(in srgb, var(--dark) 94%, transparent);
+  border: 1px solid var(--light);
+  box-shadow: 0 14px 44px rgba(0,0,0,0.65), inset 0 0 0 1px color-mix(in srgb, var(--hot) 30%, transparent);
+  backdrop-filter: blur(8px);
+}
+.card h2 { margin: 0 0 8px; font-size: 22px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--hot); }
+.card .score { margin: 6px 0 0; font-size: clamp(42px, 10vw, 64px); font-weight: 900; line-height: 1; color: var(--light); letter-spacing: 0.05em; }
+.card .best { margin: 8px 0 14px; }
+.card .row { justify-content: center; margin-top: 20px; }
+dl { display: flex; justify-content: center; gap: 28px; margin: 18px 0 0; }
+dt { font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; opacity: 0.75; }
+dd { margin: 2px 0 0; font-size: 24px; font-weight: 800; color: var(--light); }
+dl div { text-align: center; }
+
+/* ── loadout & Valorant-style upgrade layout ──────────────────────── */
+.sheet {
+  position: absolute; inset: 0; overflow-y: auto; overflow-x: hidden;
+  padding: clamp(14px, 2.5vw, 32px);
+  background: color-mix(in srgb, var(--dark) 92%, transparent);
+  backdrop-filter: blur(8px);
+}
+.sheet header { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; flex-wrap: wrap; }
+.sheet h2 { margin: 0 auto 0 0; font-size: clamp(22px, 4vw, 32px); letter-spacing: 0.08em; text-transform: uppercase; }
+
+.loadout-layout {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 20px;
+}
+
+@media (min-width: 900px) {
+  .loadout-layout {
+    grid-template-columns: 3fr 2.8fr;
+    align-items: start;
+  }
+}
+
+.cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; }
+.parts {
+  border: 1px solid color-mix(in srgb, var(--mid) 60%, transparent);
+  background: color-mix(in srgb, var(--dark) 60%, transparent);
+  margin: 0; padding: 12px; display: grid; gap: 10px; align-content: start; min-width: 0;
+  box-shadow: inset 0 0 12px rgba(0,0,0,0.3);
+}
+.parts legend { padding: 0 8px; font-weight: 900; letter-spacing: 0.16em; text-transform: uppercase; color: var(--hot); font-size: 13px; }
+.part {
+  display: grid; gap: 4px; text-align: left; background: color-mix(in srgb, var(--dark) 50%, transparent);
+  border: 1px solid var(--mid); padding: 10px 12px; transition: all 0.12s ease;
+}
+.part:hover {
+  border-color: var(--hot);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+}
+.part.previewing {
+  border-color: var(--hot);
+  box-shadow: inset 0 0 0 1px var(--hot);
+}
+.part b { font-size: 14px; letter-spacing: 0.04em; }
+.part small { opacity: 0.8; font-size: 11.5px; line-height: 1.35; font-family: 'Share Tech Mono', monospace; }
+.part.on {
+  background: color-mix(in srgb, var(--light) 95%, transparent);
+  color: var(--dark); border-color: var(--light); box-shadow: 4px 4px 0 var(--mid);
+}
+.stat { display: grid; grid-template-columns: 86px 1fr; align-items: center; gap: 8px; font-size: 10.5px; }
+.stat em { font-style: normal; text-transform: uppercase; letter-spacing: 0.08em; opacity: 0.85; font-family: 'Share Tech Mono', monospace; }
+.bar { display: block; height: 5px; background: color-mix(in srgb, currentColor 22%, transparent); }
+.bar i { display: block; height: 100%; background: currentColor; }
+
+/* ── Valorant-Style Tactical Evaluation Window ── */
+.eval-window {
+  border: 1px solid var(--light);
+  background: color-mix(in srgb, var(--dark) 94%, transparent);
+  box-shadow: 0 12px 36px rgba(0,0,0,0.6), inset 0 0 0 1px color-mix(in srgb, var(--hot) 35%, transparent);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.eval-monitor {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 380 / 214;
+  background: #000;
+  overflow: hidden;
+  border-bottom: 1px solid color-mix(in srgb, var(--light) 25%, transparent);
+}
+
+.eval-canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.eval-scanlines {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(0deg, rgba(0,0,0,0.15) 0px, rgba(0,0,0,0.15) 1px, transparent 1px, transparent 2px);
+}
+
+.eval-body {
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.eval-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.eval-tag {
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  color: var(--hot);
+  font-family: 'Share Tech Mono', monospace;
+  font-weight: 700;
+}
+
+.eval-title {
+  margin: 3px 0 0;
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.eval-desc {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: color-mix(in srgb, var(--light) 85%, transparent);
+}
+
+.badge-equipped {
+  display: inline-block;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.15em;
+  background: color-mix(in srgb, var(--mid) 50%, var(--dark));
+  border: 1px solid var(--mid);
+  color: var(--light);
+}
+
+.btn-equip {
+  padding: 8px 16px;
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.15em;
+  background: var(--hot);
+  color: #000;
+  border: 1px solid var(--hot);
+  box-shadow: 2px 2px 0 var(--light);
+  transition: all 0.1s ease;
+}
+.btn-equip:hover {
+  transform: translate(-1px, -1px);
+  box-shadow: 3px 3px 0 var(--light);
+}
+.btn-equip:active {
+  transform: translate(1px, 1px);
+  box-shadow: 0 0 0;
+}
+
+.eval-stats {
+  border-top: 1px solid color-mix(in srgb, var(--mid) 40%, transparent);
+  padding-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.eval-stat-row {
+  display: grid;
+  grid-template-columns: 1fr auto 54px;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+
+.eval-stat-label {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: color-mix(in srgb, var(--light) 75%, transparent);
+  font-family: 'Share Tech Mono', monospace;
+}
+
+.eval-stat-val {
+  font-family: 'Share Tech Mono', monospace;
+}
+
+.eval-stat-val b {
+  font-size: 13px;
+  color: var(--light);
+}
+
+.eval-stat-val small {
+  font-size: 10px;
+  opacity: 0.7;
+}
+
+.eval-delta {
+  font-size: 11px;
+  font-weight: 800;
+  padding: 2px 6px;
+  text-align: center;
+  border-radius: 2px;
+  font-family: 'Share Tech Mono', monospace;
+}
+
+.eval-delta.up {
+  background: rgba(74, 222, 128, 0.2);
+  color: #4ade80;
+  border: 1px solid #4ade80;
+}
+
+.eval-delta.down {
+  background: rgba(255, 59, 48, 0.2);
+  color: #ff3b30;
+  border: 1px solid #ff3b30;
+}
+
+.eval-delta.same {
+  color: var(--mid);
+}
+
+/* ── PUBG-style multi-touch mobile combat HUD ───────────────── */
+.pad { position: absolute; inset: 0; pointer-events: none; z-index: 100; }
+.pad-l, .pad-r {
+  position: absolute;
+  bottom: max(16px, env(safe-area-inset-bottom));
+  display: flex;
+  pointer-events: none;
+}
+.pad-l {
+  left: max(16px, env(safe-area-inset-left));
+  gap: 12px;
+}
+.pad-r {
+  right: max(16px, env(safe-area-inset-right));
+  flex-direction: column;
+  gap: 10px;
+  align-items: flex-end;
+}
+.pad-actions-top {
+  display: flex;
+  gap: 10px;
+  pointer-events: none;
+}
+.pad-actions-main {
+  display: flex;
+  gap: 12px;
+  pointer-events: none;
+}
+
+.tb {
+  pointer-events: auto;
+  touch-action: none;
+  border: 1.5px solid color-mix(in srgb, var(--light) 50%, transparent);
+  background: color-mix(in srgb, var(--dark) 78%, transparent);
+  backdrop-filter: blur(6px);
+  color: var(--light);
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  border-radius: 6px;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.4), inset 0 0 0 1px rgba(255,255,255,0.06);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  user-select: none;
+  -webkit-user-select: none;
+  transition: transform 0.06s ease, background 0.06s ease, border-color 0.06s ease;
+}
+.tb.down {
+  background: color-mix(in srgb, var(--hot) 35%, var(--dark));
+  border-color: var(--hot);
+  color: #ffffff;
+  transform: scale(0.94);
+  box-shadow: 0 0 16px color-mix(in srgb, var(--hot) 50%, transparent);
+}
+
+.rot {
+  width: 82px;
+  height: 82px;
+  font-size: 13px;
+  font-family: 'Share Tech Mono', monospace;
+}
+.rot-l { border-left-width: 3px; border-left-color: var(--hot); }
+.rot-r { border-right-width: 3px; border-right-color: var(--hot); }
+
+.btn-main {
+  width: 90px;
+  height: 74px;
+}
+.btn-fire { border-color: color-mix(in srgb, var(--hot) 60%, transparent); }
+.btn-thrust { border-color: color-mix(in srgb, var(--light) 60%, transparent); }
+
+.btn-ord {
+  width: 76px;
+  height: 54px;
+  background: color-mix(in srgb, var(--dark) 85%, transparent);
+}
+.btn-missile { border-color: color-mix(in srgb, var(--danger) 70%, transparent); }
+.btn-bomb { border-color: color-mix(in srgb, var(--hot) 70%, transparent); }
+
+.btn-icon { font-size: 16px; line-height: 1.1; }
+.btn-lbl { font-size: 10px; letter-spacing: 0.1em; opacity: 0.9; margin-top: 2px; }
+
+.pause-btn {
+  pointer-events: auto;
+  position: absolute;
+  top: max(16px, env(safe-area-inset-top));
+  left: max(16px, env(safe-area-inset-left));
+  padding: 6px 14px;
+  background: color-mix(in srgb, var(--dark) 80%, transparent);
+  border: 1px solid color-mix(in srgb, var(--light) 40%, transparent);
+  color: var(--light);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  font-family: 'Share Tech Mono', monospace;
+  border-radius: 4px;
+}
+
+@media (max-height: 480px) {
+  .rot { width: 68px; height: 68px; font-size: 11px; }
+  .btn-main { width: 78px; height: 62px; }
+  .btn-ord { width: 66px; height: 46px; }
+  .btn-icon { font-size: 13px; }
+  .btn-lbl { font-size: 9px; }
+  .menu { bottom: 12px; }
+  .keys { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  :root { transition: none; }
+  .btn { transition: none; }
+}
