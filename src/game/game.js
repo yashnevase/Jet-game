@@ -1,4 +1,4 @@
-import { BASE_H, MIN_W, PALETTES, PAL_KEYS, RANKS, DEFAULT_LOADOUT, SEA_Y, ORDNANCE } from './constants.js';
+import { BASE_H, MIN_W, PALETTES, PAL_KEYS, RANKS, DEFAULT_LOADOUT, SEA_Y, ORDNANCE, COMBAT } from './constants.js';
 import { clamp, damp, lerp, hex2rgb, rgb2hex, mulberry32, loadJSON, saveJSON, rnd, angDiff, wrapAngle } from './util.js';
 import { Input } from './input.js';
 import { FX } from './vfxSystem.js';
@@ -17,7 +17,7 @@ function testBulletHit(b, e) {
   // Transform bullet segment (b.px, b.py) -> (b.x, b.y) into enemy local space
   const p0x = (b.px - e.x) * cos - (b.py - e.y) * sin;
   const p0y = (b.px - e.x) * sin + (b.py - e.y) * cos;
-  const p1x = (b.x - e.x) * cos - (b.py - e.y) * sin;
+  const p1x = (b.x - e.x) * cos - (b.y - e.y) * sin;
   const p1y = (b.x - e.x) * sin + (b.y - e.y) * cos;
 
   // Box half extents with bullet thickness and generous, crisp collision padding
@@ -81,6 +81,7 @@ export class Game {
     this.hitFlash = 0; // 1 → 0 after the player is hit (drives the HUD border ticks)
     this.invertF = 0; // frames of inverted flash left (heavy kills)
     this.lock = null; // render-side target lock state
+    this.touch = false; // set by the UI once a touchscreen is detected (HUD moves clear of the thumb pads)
     this.hitmarker = null; // tactical hit confirmation marker { t, isKill, x, y }
     this.palIdx = 0;
     this.palCur = {};
@@ -117,7 +118,11 @@ export class Game {
     this.rank = 1;
     this.airT = 0;
     this.hitstop = 0;
+    this.hitstopAt = -9;
     this.slowT = 0;
+    this.incoming = 0;
+    this.threats = [];
+    this.bonusTag = '';
     this.timeScale = 1;
     this.flash = 0;
     this.banner = null;
@@ -129,6 +134,7 @@ export class Game {
     this.invertF = 0;
     this.lock = null;
     this.hitmarker = null;
+    audio.setPaused(false, true); // quitting from pause must not leave the audio ducked
     const savedPal = loadJSON('lowline.palette', 0);
     this.setPalette(savedPal);
     updateChunks(this);
@@ -157,16 +163,26 @@ export class Game {
   togglePause() {
     if (this.mode === 'play') {
       this.mode = 'paused';
+      audio.setPaused(true);
       this.cb.onMode?.('paused');
     } else if (this.mode === 'paused') {
       this.mode = 'play';
+      audio.setPaused(false);
       this.cb.onMode?.('play');
     }
+  }
+
+  // Micro-freeze on heavy impacts: capped at HITSTOP_MAX and rate-limited so it never feels sluggish.
+  freeze(sec) {
+    if (this.realT - this.hitstopAt < COMBAT.HITSTOP_GAP) return;
+    this.hitstop = Math.max(this.hitstop, Math.min(sec, COMBAT.HITSTOP_MAX));
+    this.hitstopAt = this.realT;
   }
   autoPause() { if (this.mode === 'play') this.togglePause(); }
 
   onKey(code) {
     if (code === 'KeyP' || code === 'Escape') this.togglePause();
+    else if (code === 'KeyN') { audio.toggleMute(); this.cb.onMute?.(audio.muted); }
     else if ((code === 'Enter' || code === 'KeyR') && this.mode === 'over' && this.realT - this.overAt > 0.7) this.startRun();
   }
 
@@ -212,7 +228,7 @@ export class Game {
 
   // ── main update: real-time effects, then fixed-ish sub-steps ──
   update(raw) {
-    const dt0 = Math.min(raw, 1 / 15);
+    const dt0 = Math.min(raw, 0.05); // clamp: tab-switch spikes never tunnel through physics
     this.realT += dt0;
     this.cam.trauma = Math.max(0, this.cam.trauma - dt0 * 1.4);
     this.flash = Math.max(0, this.flash - dt0 * 2.5);
@@ -226,6 +242,7 @@ export class Game {
     this.cam.ky *= kd;
     this.updatePalette(dt0);
     this.input.pollGamepad();
+    audio.tick(this);
     if (this.mode === 'paused') return;
     if (this.hitstop > 0) {
       this.hitstop -= dt0;
@@ -238,6 +255,7 @@ export class Game {
       this.timeScale = damp(this.timeScale, 1, 6, dt0);
     }
     const dt = dt0 * this.timeScale;
+    this.scanThreats();
     if (this.mode === 'over') {
       this.fx.update(dt);
       this.updateCamera(dt);
@@ -324,7 +342,7 @@ export class Game {
           damageEnemy(this, e, b.dmg);
           this.fx.spark(b.x, b.y, b.vx, b.vy, b.size > 2 ? 8 : 4);
           this.addShake(0.02 + b.size * 0.012);
-          if (b.dmg >= 10) this.hitstop = Math.max(this.hitstop, 0.025);
+          if (b.dmg >= 10) this.freeze(0.03);
           hit = true;
           break;
         }
@@ -367,13 +385,24 @@ export class Game {
   }
 
   // ── scoring & rank ───────────────────────────────────────
+  // Chain window + risk/reward: kills within 3.6 s build x2..x8; low-altitude and close-range kills pay +25% each.
   addScore(base, x, y, big) {
+    const P = this.player;
+    const prevMult = this.mult;
     this.combo++;
     this.comboT = 3.6;
     this.mult = Math.min(8, 1 + Math.floor((this.combo - 1) / 3));
-    const pts = base * this.mult;
+    let bonus = 1;
+    const tags = [];
+    if (P && P.alive && !P.dying) {
+      if (surfaceY(this, P.x) - P.y < COMBAT.LOW_ALT) { bonus += 0.25; tags.push('LOW'); }
+      if (Math.hypot(x - P.x, y - P.y) < COMBAT.CLOSE_RANGE) { bonus += 0.25; tags.push('CLOSE'); }
+    }
+    const pts = Math.round(base * this.mult * bonus);
     this.score += pts;
-    this.fx.popup(x, y, '+' + pts, big || this.mult >= 4);
+    this.bonusTag = tags.join('+');
+    this.fx.popup(x, y, '+' + pts + (tags.length ? ' ' + this.bonusTag : ''), big || this.mult >= 4 || tags.length > 0);
+    if (this.mult > prevMult) audio.chain(this.mult);
     this.checkRank();
   }
 
@@ -385,6 +414,7 @@ export class Game {
       this.banner = { text: `DEFCON ${this.rank} // RE-ARMED +5 AGM +5 GBU`, t: 2.8 };
       this.flash = 0.7;
       this.addShake(0.4);
+      audio.rankUp();
       if (this.player && this.player.alive) {
         this.player.missiles = Math.min(this.player.maxMissiles, this.player.missiles + ORDNANCE.MISSILE_REARM);
         this.player.bombs = Math.min(this.player.maxBombs, this.player.bombs + ORDNANCE.BOMB_REARM);
@@ -431,17 +461,18 @@ export class Game {
     if (this.mode !== 'play' || !P.alive || P.dying || P.inv > 0) return;
     P.hp -= n;
     P.flash = 0.14;
-    P.inv = 0.3;
+    P.inv = COMBAT.HULL_INV;
     P.lastHurt = this.t;
     this.hitFlash = 1;
     this.addShake(0.4 + n / 70);
-    this.hitstop = Math.max(this.hitstop, 0.05);
+    this.freeze(0.04);
     this.flash = Math.max(this.flash, 0.25);
     this.comboT = Math.min(this.comboT, 1.2);
-    audio.explode(false);
+    audio.hullHit(clamp(n / 35, 0.2, 1));
     const dx = P.x - sx;
     const dy = P.y - sy;
     const d = Math.hypot(dx, dy) || 1;
+    this.addKick(dx / d, dy / d, 0.5 + n / 60); // frame is shoved away from the impact
     P.vx += (dx / d) * 60;
     P.vy += (dy / d) * 60;
     this.fx.spark(P.x, P.y, -dx, -dy, 7);
@@ -460,7 +491,6 @@ export class Game {
     const P = this.player;
     if (!P.alive) return;
     P.alive = false;
-    audio.explode(true);
     const y = land ? surfaceY(this, P.x) : SEA_Y;
     this.fx.explode(this, P.x, Math.min(P.y, y), 2.4);
     if (!land) this.fx.splash(P.x, 1.8);
@@ -505,20 +535,47 @@ export class Game {
     c.y = Math.min(c.y, -0.18 * h);
   }
 
-  // ── guided homing missiles (GTA V Oppressor Mk2 style tracking & break-turn dodging) ─
+  // ── incoming-threat scan: feeds the diegetic warning arcs, edge chevrons and warning tones ──
+  scanThreats() {
+    const P = this.player;
+    const out = this.threats;
+    out.length = 0;
+    let top = 0;
+    if (this.mode === 'play' && P.alive && !P.dying) {
+      for (const b of this.eb) {
+        const dx = P.x - b.x;
+        const dy = P.y - b.y;
+        const d = Math.hypot(dx, dy);
+        if (d > 520 || d < 1) continue;
+        // closing speed of the round relative to the jet along the line between them
+        const close = (b.vx - P.vx) * (dx / d) + (b.vy - P.vy) * (dy / d);
+        if (close < 60) continue;
+        const eta = d / close;
+        if (eta > 1.4) continue;
+        const urgency = clamp(1 - eta / 1.4, 0, 1);
+        if (out.length < 10) out.push({ ang: Math.atan2(-dy, -dx), urgency, eta, x: b.x, y: b.y, kind: b.type });
+        top = Math.max(top, urgency);
+      }
+    }
+    this.incoming = top;
+  }
+
+  // ── guided missiles: ejector coast → motor ignition → pursuit arc with a drifting smoke ribbon ──
   launchMissile(p, overrideTgt = null) {
     const S = (p.hull.scale || 1) * 1.25;
     const flip = Math.cos(p.a) < 0 ? -1 : 1;
     const ca = Math.cos(p.a);
     const sa = Math.sin(p.a);
     p.missileWing = ((p.missileWing || 0) + 1) % 2;
-    const ly = (p.missileWing === 0 ? 15 : -15) * S * flip;
+    const side = (p.missileWing === 0 ? 1 : -1) * flip;
+    const ly = 15 * S * side;
     const lx = -4 * S;
     const sx = p.x + lx * ca - ly * sa;
     const sy = p.y + lx * sa + ly * ca;
 
-    // Prefer active target lock, otherwise acquire closest enemy in 65° forward cone
-    let tgt = overrideTgt || (this.lock?.e && !this.lock.e.dying ? this.lock.e : null);
+    // Prefer the fully-acquired lock, otherwise the nearest enemy in a 65° forward cone (weaker seeker)
+    const locked = !!(this.lock && this.lock.e && !this.lock.e.dying && this.lock.t >= 1);
+    let tgt = overrideTgt || (this.lock?.e && !this.lock.e.dying && this.lock.t >= 0.5 ? this.lock.e : null);
     if (!tgt) {
       let bd = 900;
       for (const e of this.enemies) {
@@ -535,36 +592,51 @@ export class Game {
       }
     }
 
-    const initSpd = Math.max(340, Math.hypot(p.vx, p.vy) + 140);
+    // ejector pushes the round off the pylon, away from the wing, before the motor lights
+    const eject = 55;
     this.pm.push({
       x: sx, y: sy, px: sx, py: sy,
       a: p.a,
-      vx: Math.cos(p.a) * initSpd,
-      vy: Math.sin(p.a) * initSpd,
+      vx: p.vx * 0.96 - sa * eject * side,
+      vy: p.vy * 0.96 + ca * eject * side + 20,
       tgt,
+      seek: overrideTgt || locked ? 1 : 0.55,
+      delay: ORDNANCE.MISSILE_MOTOR_DELAY,
+      lit: false,
+      age: 0,
       life: ORDNANCE.MISSILE_LIFE,
       trailT: 0,
     });
     this.fx.smoke(sx, sy, 1.4, ['light', 'mid'], 0.6);
-    this.fx.shock(sx, sy, 16, 'ring', 0.22);
+    this.fx.shock(sx, sy, 14, 'ring', 0.18);
     this.addShake(0.08);
+    this.addKick(-ca, -sa, 0.3);
+    p.vx -= ca * 10;
+    p.vy -= sa * 10;
   }
 
-  dropBomb(p) {
+  dropBomb(p, ripple = 0) {
     const S = (p.hull.scale || 1) * 1.25;
     const ca = Math.cos(p.a);
     const sx = p.x - 3 * S * ca;
     const sy = p.y + 7 * S;
-
+    const sp = Math.hypot(p.vx, p.vy);
+    // ballistic arc inherits the jet's full velocity; a dive hands the bomb extra punch
+    const power = 1 + clamp((sp - 260) / 380, 0, 0.6) + clamp(p.vy / 700, 0, 0.25);
     this.bombs.push({
       x: sx, y: sy, px: sx, py: sy,
-      vx: p.vx * 0.94 + (Math.random() - 0.5) * 18,
-      vy: p.vy * 0.35 + 24,
-      a: p.a,
-      life: 5.5,
+      vx: p.vx,
+      vy: p.vy + 18,
+      a: Math.atan2(p.vy + 18, p.vx),
+      life: 6,
+      power,
+      ripple,
+      trailT: 0,
     });
-    this.fx.smoke(sx, sy, 0.9, ['mid'], 0.4);
-    this.addShake(0.06);
+    // release cues: pylon tick ring + small tick marks, camera nudge
+    this.fx.release(sx, sy, ripple);
+    this.addShake(0.05);
+    this.addKick(0, 1, 0.1);
   }
 
   updateMissiles(dt) {
@@ -574,43 +646,59 @@ export class Game {
       m.px = m.x;
       m.py = m.y;
       m.life -= dt;
+      m.age += dt;
 
-      // Proportional navigation guidance
-      const tgt = m.tgt && !m.tgt.dying ? m.tgt : null;
-      if (tgt) {
-        const dx = tgt.x - m.x;
-        const dy = tgt.y - m.y;
-        const want = Math.atan2(dy, dx);
-        const diff = angDiff(m.a, want);
-        const maxTurn = ORDNANCE.MISSILE_TURN * dt;
-        m.a = wrapAngle(m.a + clamp(diff, -maxTurn, maxTurn));
+      if (!m.lit) {
+        // coast: falls away under gravity, nose still pointing where it was launched
+        m.vy += 380 * dt;
+        m.x += m.vx * dt;
+        m.y += m.vy * dt;
+        m.delay -= dt;
+        if (m.delay <= 0) {
+          m.lit = true;
+          const spd = Math.max(340, Math.hypot(m.vx, m.vy) + 140);
+          m.vx = Math.cos(m.a) * spd;
+          m.vy = Math.sin(m.a) * spd;
+          this.fx.add({ k: 'star', x: m.x, y: m.y, ang: m.a, life: 0.1, s0: 4, s1: 7, ramp: ['light', 'hot'], z: 1 });
+          this.fx.shock(m.x, m.y, 20, 'ring', 0.22);
+          this.fx.smoke(m.x, m.y, 1.8, ['light', 'mid'], 0.7);
+        }
+      } else {
+        // pursuit guidance: turn rate capped (dodgeable by a hard break), weaker if fired without lock
+        const tgt = m.tgt && !m.tgt.dying ? m.tgt : null;
+        if (tgt) {
+          const want = Math.atan2(tgt.y - m.y, tgt.x - m.x);
+          const diff = angDiff(m.a, want);
+          const maxTurn = ORDNANCE.MISSILE_TURN * m.seek * dt;
+          m.a = wrapAngle(m.a + clamp(diff, -maxTurn, maxTurn));
+        } else {
+          m.vy += 60 * dt; // dumb round droops slowly
+          m.a = Math.atan2(m.vy, m.vx);
+        }
+        const curSpd = Math.hypot(m.vx, m.vy);
+        const newSpd = Math.min(ORDNANCE.MISSILE_SPEED, curSpd + 650 * dt);
+        m.vx = Math.cos(m.a) * newSpd;
+        m.vy = Math.sin(m.a) * newSpd;
+        m.x += m.vx * dt;
+        m.y += m.vy * dt;
       }
 
-      // Acceleration to top speed
-      const curSpd = Math.hypot(m.vx, m.vy);
-      const newSpd = Math.min(ORDNANCE.MISSILE_SPEED, curSpd + 650 * dt);
-      m.vx = Math.cos(m.a) * newSpd;
-      m.vy = Math.sin(m.a) * newSpd;
-      m.x += m.vx * dt;
-      m.y += m.vy * dt;
-
+      // exhaust ribbon (own stream so it never tangles with the jet's contrail) + sparks
       m.trailT -= dt;
       if (m.trailT <= 0) {
-        m.trailT = 0.016;
-        this.fx.trail(m.x - Math.cos(m.a) * 9, m.y - Math.sin(m.a) * 9, 0.9);
+        m.trailT = 0.014;
+        this.fx.trail(m.x - Math.cos(m.a) * 9, m.y - Math.sin(m.a) * 9, m.lit ? 1.05 : 0.5, m);
+        if (m.lit && Math.random() < 0.35) this.fx.smoke(m.x - Math.cos(m.a) * 11, m.y - Math.sin(m.a) * 11, 0.9, ['mid'], 0.55);
       }
 
       let dead = m.life <= 0;
-      // Proximity & CCD hit check on enemies
-      if (!dead) {
+      if (!dead && m.lit) {
         for (const e of this.enemies) {
           if (e.dying) continue;
           if (Math.hypot(e.x - m.x, e.y - m.y) < Math.max(e.hw, e.hh) + 12) {
             damageEnemy(this, e, ORDNANCE.MISSILE_DMG);
             this.fx.shock(m.x, m.y, 38, 'ring', 0.35);
             this.fx.explode(this, m.x, m.y, 1.4);
-            audio.explode(true);
-            audio.hitmarker(e.hp <= 0);
             this.hitmarker = { t: 0.22, isKill: e.hp <= 0, x: m.x, y: m.y };
             this.addShake(0.32);
             dead = true;
@@ -619,7 +707,6 @@ export class Game {
         }
       }
 
-      // Sea / ground impact
       if (!dead) {
         const sy = surfaceY(this, m.x);
         if (m.y >= sy) {
@@ -627,7 +714,6 @@ export class Game {
           this.fx.explode(this, m.x, sy - 2, 1.2);
           if (sy < SEA_Y - 1) this.fx.spark(m.x, m.y, 0, -120, 8);
           else this.fx.splash(m.x, 0.7);
-          audio.explode(false);
         }
       }
 
@@ -649,6 +735,11 @@ export class Game {
       b.x += b.vx * dt;
       b.y += b.vy * dt;
       b.a = Math.atan2(b.vy, b.vx);
+      b.trailT -= dt;
+      if (b.trailT <= 0) {
+        b.trailT = 0.03;
+        this.fx.trail(b.x - Math.cos(b.a) * 6, b.y - Math.sin(b.a) * 6, 0.35, b);
+      }
 
       let dead = b.life <= 0;
       const sy = surfaceY(this, b.x);
@@ -668,10 +759,13 @@ export class Game {
       if (dead) {
         const bx = b.x;
         const by = Math.min(b.y, sy);
-        this.fx.shock(bx, by, ORDNANCE.BOMB_RADIUS, 'ring', 0.45);
-        this.fx.explode(this, bx, by, 1.8);
+        const pw = b.power || 1;
+        const radius = ORDNANCE.BOMB_RADIUS * (1 + (pw - 1) * 0.25);
+        this.fx.shock(bx, by, radius, 'ring', 0.45);
+        this.fx.explode(this, bx, by, 1.8 + (pw - 1) * 0.8);
         this.addShake(0.48);
-        audio.bombExplode();
+        const pd = Math.hypot(this.player.x - bx, this.player.y - by) || 1;
+        this.addKick((this.player.x - bx) / pd, (this.player.y - by) / pd, 1.2);
 
         if (sy < SEA_Y - 1) this.fx.spark(bx, by, 0, -180, 14);
         else this.fx.splash(bx, 1.4);
@@ -680,8 +774,8 @@ export class Game {
         for (const e of this.enemies) {
           if (e.dying) continue;
           const dist = Math.hypot(e.x - bx, e.y - by);
-          if (dist < ORDNANCE.BOMB_RADIUS + Math.max(e.hw, e.hh)) {
-            const dmg = ORDNANCE.BOMB_DMG * (1 - dist / (ORDNANCE.BOMB_RADIUS + 30));
+          if (dist < radius + Math.max(e.hw, e.hh)) {
+            const dmg = ORDNANCE.BOMB_DMG * pw * (1 - dist / (radius + 30));
             damageEnemy(this, e, Math.max(15, dmg));
             if (e.hp <= 0) anyKill = true;
           }

@@ -99,7 +99,7 @@ function turret(g, e, dt, range, cd0, cd1, ox, oy, fire) {
     return;
   }
   e.cd -= dt;
-  e.warn = e.cd < 0.35 ? 1 : 0;
+  e.warn = e.cd < 0.5 ? 1 : 0;
   if (e.cd <= 0) {
     if (fire(tx, ty, e.aim) !== false) e.recoil = 1;
     e.cd = rnd(cd0, cd1) - Math.min(g.rank * 0.1, 0.8);
@@ -220,6 +220,10 @@ const AI = {
     e.a = wrapAngle(e.a + clamp(angDiff(e.a, tgt), -turn * dt, turn * dt));
     e.x += Math.cos(e.a) * e.speed * dt;
     e.y += Math.sin(e.a) * e.speed * dt;
+
+    // Telegraph: from 0.55 s before the burst (and during it) the jet shows its aim line and pings a warning
+    const aligned = Math.abs(angDiff(e.a, Math.atan2(P.y - e.y, P.x - e.x))) < 0.4;
+    e.warn = ok && e.state === 'attack' && d >= 220 && d < 580 && aligned && (e.burstN > 0 || e.cd < 0.55) ? 1 : 0;
 
     // Tactical burst fire: fires from stand-off range (260-560px) with lead deflection
     e.cd -= dt;
@@ -357,7 +361,6 @@ export function killEnemy(g, e) {
   const c = CFG[e.kind];
   g.addScore(e.score, e.x, e.y - e.hh - 4, e.kind === 'carrier' || e.kind === 'destroyer');
   g.kills++;
-  audio.explode(e.kind === 'carrier' || e.kind === 'destroyer');
   e.dying = c.air ? 'fall' : c.sea ? 'sink' : 'rubble';
   e.dt = 0;
   e.warn = 0;
@@ -368,7 +371,7 @@ export function killEnemy(g, e) {
       break;
     case 'carrier':
       g.fx.explode(g, e.x, e.y - 6, 3.4);
-      g.hitstop = 0.2;
+      g.freeze(0.045);
       g.slowT = 0.5;
       e.boomT = 0.1;
       e.sinkTilt = 0.07 * e.dir;
@@ -399,6 +402,8 @@ export function killEnemy(g, e) {
     default:
       g.fx.explode(g, e.x, e.y, c.hp > 50 ? 1.5 : 1);
   }
+  // persistent wireframe wreckage that tumbles and splashes down
+  g.fx.wreck(e.x, e.y, e.hw, e.hh, e.vx || 0, e.vy || 0, c.hp > 60 ? 2 : 1);
 }
 
 function updateDying(g, e, dt) {
@@ -461,6 +466,9 @@ export function updateEnemies(g, dt) {
       updateDying(g, e, dt);
     } else {
       AI[e.kind](g, e, dt);
+      const w = e.warn ? 1 : 0;
+      if (w && !e._w && canTarget(g) && Math.hypot(e.x - P.x, e.y - P.y) < 760) audio.threatTick();
+      e._w = w;
       if (e.hp < e.maxHp * 0.5) {
         e.smokeT -= dt;
         if (e.smokeT <= 0) {

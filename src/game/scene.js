@@ -10,8 +10,37 @@ import { lw, dash, snap, label, inkReset, dimLine, line, W_OUT, W_RIB, W_FINE } 
 //  functions (islands, water) expect it for the zoomed world transform.
 // ─────────────────────────────────────────────────────────────
 
+// '#RRGGBB' + alpha -> rgba() string
+function hexA(hex, a) {
+  const n = parseInt(hex.slice(1, 7), 16);
+  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
+}
+
 const MINOR = 20;
 const MAJOR = 100;
+
+// Shockwave displacement of the grid: each warp is an expanding ring that pushes grid lines outward.
+const _off = { x: 0, y: 0 };
+function warpOffset(px, py, warps, cam, z, w, h) {
+  let ox = 0;
+  let oy = 0;
+  for (let i = 0; i < warps.length; i++) {
+    const k = warps[i];
+    const bx = w / 2 + (k.x - cam.x) * z;
+    const by = h / 2 + (k.y - cam.y) * z;
+    const dx = px - bx;
+    const dy = py - by;
+    const r = Math.hypot(dx, dy) || 1;
+    const rel = r - k.age * 330 * z;
+    if (rel > 70 || rel < -70) continue;
+    const push = k.amp * z * Math.exp(-k.age * 2.4) * Math.exp(-(rel * rel) / 700);
+    ox += (dx / r) * push;
+    oy += (dy / r) * push;
+  }
+  _off.x = ox;
+  _off.y = oy;
+  return _off;
+}
 
 // ── Backdrop: flat slate, multi-tier grid, edge ticks + coordinate labels, distant ridges ──
 export function drawBackdrop(ctx, g, w, h) {
@@ -30,6 +59,67 @@ export function drawBackdrop(ctx, g, w, h) {
   }
   ctx.fillRect(-40, -40, w + 80, h + 80);
 
+  const warps = g.fx.warps;
+  const hasWarp = warps.length > 0;
+  // grid line in screen space; bent by blast shockwaves when any are active
+  const gridLine = (x1, y1, x2, y2) => {
+    if (!hasWarp) {
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      return;
+    }
+    const n = Math.max(2, Math.ceil(Math.hypot(x2 - x1, y2 - y1) / 22));
+    for (let i = 0; i <= n; i++) {
+      const px = x1 + ((x2 - x1) * i) / n;
+      const py = y1 + ((y2 - y1) * i) / n;
+      const o = warpOffset(px, py, warps, cam, z, w, h);
+      if (i === 0) ctx.moveTo(px + o.x, py + o.y);
+      else ctx.lineTo(px + o.x, py + o.y);
+    }
+  };
+
+  const ex = 40; // overscan so camera shake never exposes an unlined border
+
+  // parallax backing grid: far layer, slower than the world, larger cells, dimmer (adds depth behind the main sheet)
+  {
+    const pf = 0.38;
+    const pz = z * 0.62;
+    const PS = 160;
+    const px0 = cam.x * pf - w / 2 / pz - PS;
+    const px1 = cam.x * pf + w / 2 / pz + PS;
+    const py0 = cam.y * pf - h / 2 / pz - PS;
+    const py1 = cam.y * pf + h / 2 / pz + PS;
+    ctx.strokeStyle = pal.grid || pal.light;
+    ctx.globalAlpha = 0.045;
+    lw(ctx, 1);
+    ctx.beginPath();
+    for (let gx = Math.ceil(px0 / PS) * PS; gx <= px1; gx += PS) {
+      const x = snap(w / 2 + (gx - cam.x * pf) * pz);
+      ctx.moveTo(x, -ex);
+      ctx.lineTo(x, h + ex);
+    }
+    for (let gy = Math.ceil(py0 / PS) * PS; gy <= py1; gy += PS) {
+      const y = snap(h / 2 + (gy - cam.y * pf) * pz);
+      ctx.moveTo(-ex, y);
+      ctx.lineTo(w + ex, y);
+    }
+    ctx.stroke();
+    // registration crosses at the far-grid intersections
+    ctx.globalAlpha = 0.09;
+    ctx.beginPath();
+    for (let gx = Math.ceil(px0 / PS) * PS; gx <= px1; gx += PS) {
+      for (let gy = Math.ceil(py0 / PS) * PS; gy <= py1; gy += PS) {
+        const x = snap(w / 2 + (gx - cam.x * pf) * pz);
+        const y = snap(h / 2 + (gy - cam.y * pf) * pz);
+        ctx.moveTo(x - 3, y);
+        ctx.lineTo(x + 3, y);
+        ctx.moveTo(x, y - 3);
+        ctx.lineTo(x, y + 3);
+      }
+    }
+    ctx.stroke();
+  }
+
   // world-fixed grid: 20-unit minor (3%) and 100-unit major (8%) divisions
   const x0 = cam.x - w / 2 / z - MINOR;
   const x1 = cam.x + w / 2 / z + MINOR;
@@ -37,23 +127,23 @@ export function drawBackdrop(ctx, g, w, h) {
   const y1 = cam.y + h / 2 / z + MINOR;
   const sx = (wx) => snap(w / 2 + (wx - cam.x) * z);
   const sy = (wy) => snap(h / 2 + (wy - cam.y) * z);
-  const ex = 40; // overscan so camera shake never exposes an unlined border
+  // while a shockwave passes the grid flares up so the displacement reads (still far below the combat layer)
+  let boost = 0;
+  for (const k of warps) boost = Math.max(boost, Math.exp(-k.age * 2.2));
   for (const [step, alpha] of [[MINOR, 0.03], [MAJOR, 0.08]]) {
     ctx.strokeStyle = pal.grid || pal.light;
-    ctx.globalAlpha = alpha;
+    ctx.globalAlpha = Math.min(0.3, alpha * (1 + 3 * boost));
     lw(ctx, 1);
     ctx.beginPath();
     for (let wx = Math.ceil(x0 / step) * step; wx <= x1; wx += step) {
       if (step === MINOR && wx % MAJOR === 0) continue;
       const x = sx(wx);
-      ctx.moveTo(x, -ex);
-      ctx.lineTo(x, h + ex);
+      gridLine(x, -ex, x, h + ex);
     }
     for (let wy = Math.ceil(y0 / step) * step; wy <= y1; wy += step) {
       if (step === MINOR && wy % MAJOR === 0) continue;
       const y = sy(wy);
-      ctx.moveTo(-ex, y);
-      ctx.lineTo(w + ex, y);
+      gridLine(-ex, y, w + ex, y);
     }
     ctx.stroke();
   }
@@ -130,6 +220,27 @@ export function drawBackdrop(ctx, g, w, h) {
     label(ctx, '0 MSL // SEA LEVEL HORIZON', w / 2, hy + 6, pal.hot, 5.5, 'center', 0.45);
   }
 
+  // ── low-altitude hazard band: red wash toward the surface, plus the +25% LOW-bonus datum at 70 m ──
+  const hazardHeight = 960;
+  if (hy > 0 && hy - hazardHeight * z < h) {
+    const topY = hy - hazardHeight * z;
+    const grad = ctx.createLinearGradient(0, topY, 0, hy);
+    grad.addColorStop(0, 'rgba(0,0,0,0)');
+    grad.addColorStop(0.55, hexA(pal.danger, 0.08));
+    ctx.globalAlpha = 1;
+    grad.addColorStop(1, hexA(pal.danger, 0.26));
+    ctx.fillStyle = grad;
+    ctx.fillRect(-ex, topY, w + 2 * ex, hazardHeight * z);
+    const by = hy - 70 * z;
+    ctx.strokeStyle = pal.danger;
+    ctx.globalAlpha = 0.28;
+    lw(ctx, W_FINE);
+    dash(ctx, 3, 6);
+    line(ctx, -ex, by, w + ex, by);
+    ctx.setLineDash([]);
+    if (by > 50 && by < h - 14) label(ctx, 'LOW-ALT 70M // +25% BONUS // TERRAIN HAZARD', by < 125 ? 232 : 36, by - 5, pal.danger, 5, 'left', 0.4);
+  }
+
   // High-altitude flight strata (FL180, FL240, FL300) to orient pilots during vertical climbs
   for (const [alt, fl] of [[-600, 'FL180'], [-1200, 'FL240'], [-1800, 'FL300']]) {
     const y = sy(alt);
@@ -140,7 +251,7 @@ export function drawBackdrop(ctx, g, w, h) {
       dash(ctx, 6, 8);
       line(ctx, -ex, y, w + ex, y);
       ctx.setLineDash([]);
-      label(ctx, `AIR CORRIDOR ${fl} // ALT ${-alt}M`, 36, y - 5, pal.light, 5, 'left', 0.3);
+      label(ctx, `AIR CORRIDOR ${fl} // ALT ${-alt}M`, y < 125 ? 232 : 36, y - 5, pal.light, 5, 'left', 0.3); // keep clear of the hull/radar block
     }
   }
 

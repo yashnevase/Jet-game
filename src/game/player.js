@@ -21,6 +21,8 @@ export function makePlayer(loadout) {
     bombHoldT: 0,
     bombSalvoN: 0,
     bombSalvoT: 0,
+    bombHeld: false, bombSpent: false, missileHeld: false, dry: 0,
+    throttle: 0, thrustT: 0, ab: 0, stall: false, bank: 0, flipAnim: 1, g: 1,
     alive: true, dying: false, demo: false,
     flash: 0, inv: 0, cd: 0, lastFire: -9, lastHurt: -9,
     thrusting: false, firing: false,
@@ -38,9 +40,15 @@ function flight(p, dt, g) {
   const fy = Math.sin(p.a);
   let sp = Math.hypot(p.vx, p.vy);
 
-  if (p.thrusting) {
-    p.vx += fx * eng.thrust * dt;
-    p.vy += fy * eng.thrust * dt;
+  // Throttle spools up/down (weight), and holding thrust lights the afterburner after a beat.
+  p.throttle = damp(p.throttle, p.thrusting ? 1 : 0, p.thrusting ? PHYS.SPOOL_UP : PHYS.SPOOL_DOWN, dt);
+  p.thrustT = p.thrusting ? p.thrustT + dt : Math.max(0, p.thrustT - dt * 2);
+  const abOn = p.thrusting && p.thrustT > PHYS.AB_ENGAGE;
+  p.ab = damp(p.ab, abOn ? 1 : 0, abOn ? 5 : 3.5, dt);
+  {
+    const push = eng.thrust * (0.35 + 0.65 * p.throttle) * (1 + (PHYS.AB_THRUST - 1) * p.ab);
+    p.vx += fx * push * dt;
+    p.vy += fy * push * dt;
   }
 
   // Lift acts on the airframe's "up" side and grows with speed². At CRUISE in level flight it equals gravity.
@@ -55,6 +63,13 @@ function flight(p, dt, g) {
   p.vy += ny * lift * dt;
 
   p.vy += G * dt;
+
+  // Energy: nose-down converts altitude into airspeed; a steep sustained climb bleeds it away.
+  if (fy > 0.15) {
+    const dive = (fy - 0.15) / 0.85;
+    p.vx += fx * G * PHYS.DIVE_ACCEL * dive * dt;
+    p.vy += fy * G * PHYS.DIVE_ACCEL * dive * dt;
+  }
 
   // Ground effect: aerodynamic high-pressure cushion within 52 units of sea/terrain
   if (g && p.y > SEA_Y - 55 && p.vy > 0) {
@@ -81,11 +96,23 @@ function flight(p, dt, g) {
   p.vx *= d;
   p.vy *= d;
 
-  sp = Math.hypot(p.vx, p.vy);
-  if (sp > eng.maxSpeed) {
-    p.vx *= eng.maxSpeed / sp;
-    p.vy *= eng.maxSpeed / sp;
+  if (fy < -0.35) {
+    const bleed = Math.exp(-PHYS.CLIMB_BLEED * ((-fy - 0.35) / 0.65) * dt);
+    p.vx *= bleed;
+    p.vy *= bleed;
   }
+
+  sp = Math.hypot(p.vx, p.vy);
+  const cap = eng.maxSpeed * (1 + (PHYS.AB_SPEED - 1) * p.ab) * (1 + PHYS.DIVE_OVERSPEED * clamp(fy, 0, 1));
+  if (sp > cap) {
+    // overspeed bleeds off quickly instead of hard-clamping, so dive speed feels earned
+    const k = sp > cap * 1.02 ? Math.exp(-4 * dt) : 1;
+    const target = Math.max(cap, sp * k);
+    p.vx *= target / sp;
+    p.vy *= target / sp;
+  }
+  sp = Math.hypot(p.vx, p.vy);
+  p.stall = sp < PHYS.STALL_SPEED;
 
   // stall: too slow and the nose flops toward the direction you're actually moving
   if (sp < 150) {
@@ -126,11 +153,12 @@ function shoot(g, p) {
   p.vx -= fx * gun.recoil;
   p.vy -= fy * gun.recoil;
   if (gun.shots === 1) g.fx.muzzle(lastX, lastY, p.a, gun.size > 2 ? 1.7 : 1);
-  if (gun.id === 'mg' && Math.random() < 0.4) {
+  if (gun.id === 'mg' ? Math.random() < 0.7 : gun.id === 'cannon' || Math.random() < 0.5) {
     const [cx, cy] = playerBreech(p, p.mountI);
-    g.fx.casing(cx, cy, p.a);
+    g.fx.casing(cx, cy, p.a, gun.id === 'cannon' ? 2.2 : 1);
   }
   g.addShake(gun.size > 2 ? 0.2 : 0.03);
+  g.addKick(-fx, -fy, gun.size > 2 ? 0.55 : 0.07); // recoil shoves the frame backwards
   audio.shoot(gun.id);
 }
 
@@ -167,7 +195,7 @@ export function updatePlayer(g, dt) {
   const sp0 = Math.hypot(p.vx, p.vy);
   const pullingUp = (p.vy > 50 && ((Math.cos(p.a) >= 0 && steer < 0) || (Math.cos(p.a) < 0 && steer > 0)));
   const aeroAuthority = clamp(1 + (sp0 / 520) * 0.35 + (pullingUp ? 0.35 : 0), 0.9, 1.55);
-  p.av = damp(p.av, steer * p.hull.turn * aeroAuthority, 18, dt);
+  p.av = damp(p.av, steer * p.hull.turn * aeroAuthority, PHYS.PITCH_DAMP, dt);
   p.a = wrapAngle(p.a + p.av * dt);
 
   flight(p, dt, g);
@@ -183,43 +211,63 @@ export function updatePlayer(g, dt) {
     }
   }
 
-  // guided homing missiles (GTA V style)
+  // guided missiles: ONE missile per press (edge-triggered) so a held/bouncy key never double-spends.
   p.missileCd = Math.max(0, p.missileCd - dt);
-  if (inp.missile && p.missileCd <= 0 && p.missiles > 0) {
-    p.missiles--;
-    p.missileCd = 0.5;
-    g.launchMissile(p);
-    audio.missileLaunch();
+  p.dry = Math.max(0, p.dry - dt);
+  if (inp.missile && !p.missileHeld) {
+    if (p.missileCd <= 0 && p.missiles > 0) {
+      p.missiles--;
+      p.missileCd = ORDNANCE.MISSILE_CD;
+      g.launchMissile(p);
+      audio.missileLaunch();
+    } else if (p.missiles <= 0) {
+      p.dry = 0.35;
+      audio.dryFire();
+    }
   }
+  p.missileHeld = !!inp.missile;
 
-  // gravity bombs: tap to drop 1, hold to drop a salvo of 3-5
+  // gravity bombs: the first bomb drops the instant you press (a tap = one precision bomb);
+  // keep holding and a controlled ripple follows at fixed spacing. Releasing cancels the rest.
   p.bombCd = Math.max(0, p.bombCd - dt);
   if (inp.bomb) {
-    p.bombHoldT += dt;
-    // holding down: trigger salvo
-    if (p.bombHoldT > 0.28 && p.bombSalvoN === 0 && p.bombs > 0) {
-      p.bombSalvoN = Math.min(4, p.bombs);
-      p.bombSalvoT = 0;
+    if (!p.bombHeld) {
+      p.bombHeld = true;
+      p.bombHoldT = 0;
+      p.bombSpent = false;
+      p.bombSalvoN = 0;
+      if (p.bombCd <= 0 && p.bombs > 0) {
+        p.bombs--;
+        p.bombCd = ORDNANCE.BOMB_TAP_CD;
+        g.dropBomb(p, 0);
+        audio.bombDrop();
+      } else if (p.bombs <= 0) {
+        p.dry = 0.35;
+        audio.dryFire();
+      }
+    } else {
+      p.bombHoldT += dt;
+      if (!p.bombSpent && p.bombSalvoN === 0 && p.bombHoldT > ORDNANCE.BOMB_HOLD_T && p.bombs > 0) {
+        p.bombSalvoN = Math.min(ORDNANCE.BOMB_SALVO, p.bombs);
+        p.bombSalvoT = 0;
+        p.bombSpent = true;
+        p.bombRipple = 0;
+      }
     }
   } else {
-    // released button: if short tap, drop 1 bomb
-    if (p.bombHoldT > 0 && p.bombHoldT <= 0.28 && p.bombCd <= 0 && p.bombs > 0 && p.bombSalvoN === 0) {
-      p.bombs--;
-      p.bombCd = 0.35;
-      g.dropBomb(p);
-      audio.bombDrop();
-    }
+    p.bombHeld = false;
     p.bombHoldT = 0;
+    p.bombSalvoN = 0; // released: cancel whatever is left of the ripple
   }
 
-  // salvo bomb dispenser
   if (p.bombSalvoN > 0) {
     p.bombSalvoT -= dt;
     if (p.bombSalvoT <= 0 && p.bombs > 0) {
-      p.bombSalvoT = 0.11;
+      p.bombSalvoT = ORDNANCE.BOMB_RIPPLE_T;
       p.bombSalvoN--;
       p.bombs--;
-      g.dropBomb(p);
+      p.bombRipple = (p.bombRipple || 0) + 1;
+      g.dropBomb(p, p.bombRipple);
       audio.bombDrop();
     }
     if (p.bombs <= 0) p.bombSalvoN = 0;
@@ -247,15 +295,27 @@ export function updatePlayer(g, dt) {
     const ty = p.y - Math.sin(p.a) * tl - p.vy * dt * f;
     g.fx.trail(tx, ty, trailSize);
   }
-  // wingtip vortex ribbons appear under hard G (visual only)
-  if (gf > 0.35 && sp > 120) {
+  // visual attitude: bank compression follows turn rate; flipAnim rolls the jet over when it reverses
+  p.g = 1 + gf * 5;
+  p.bank = damp(p.bank, clamp(p.av / p.hull.turn, -1, 1) * clamp(sp / 260, 0.3, 1), 9, dt);
+  p.flipAnim = damp(p.flipAnim, Math.cos(p.a) < 0 ? -1 : 1, 16, dt);
+
+  // wingtip vortex ribbons appear under hard G; one per wing, fading smoothly
+  if (gf > 0.3 && sp > 120) {
     const S = PLAYER_SCALE(p);
-    const flip = Math.cos(p.a) < 0 ? -1 : 1;
     const ca = Math.cos(p.a);
     const sa = Math.sin(p.a);
     const lx = -9 * S;
-    const ly = 17.2 * S * flip; // wingtip missile rail
-    g.fx.trail(p.x + lx * ca - ly * sa, p.y + lx * sa + ly * ca, 0.3 + gf * 0.45, 'wt');
+    for (const side of [-1, 1]) {
+      const ly = 17.2 * S * side;
+      g.fx.trail(p.x + lx * ca - ly * sa, p.y + lx * sa + ly * ca, 0.28 + gf * 0.5, side < 0 ? 'wtL' : 'wtR');
+    }
+  }
+  // afterburner: shower of sparks off the nozzles
+  if (p.ab > 0.55 && Math.random() < 0.55) {
+    const S = PLAYER_SCALE(p);
+    const [bx, by] = [p.x - Math.cos(p.a) * 26 * S, p.y - Math.sin(p.a) * 26 * S];
+    g.fx.add({ k: 'tracer', x: bx, y: by, vx: -Math.cos(p.a) * rnd(120, 260) + p.vx * 0.5 + rnd(-40, 40), vy: -Math.sin(p.a) * rnd(120, 260) + p.vy * 0.5 + rnd(-40, 40), life: rnd(0.12, 0.25), drag: 2, ramp: ['light', 'hot'], w: 0.8, z: 0 });
   }
   if (p.hp < p.maxHp * 0.4 && Math.random() < 0.6) g.fx.burn(p.x, p.y, 0.9);
 
@@ -270,7 +330,7 @@ export function updatePlayer(g, dt) {
   // GPWS warning: altitude danger when descending rapidly towards sea or ground
   const ground = land ? surfaceY(g, p.x) : waveY(p.x, g.t);
   const altDist = ground - p.y;
-  p.gpws = (altDist < 110 && p.vy > 95);
+  p.gpws = (altDist < 220 && p.vy > 95);
   if (p.gpws && g.mode === 'play') audio.gpwsWarning();
 
   // sonic boom vapor ring when exceeding top cruise speed at full throttle

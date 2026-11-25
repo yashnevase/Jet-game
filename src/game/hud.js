@@ -1,6 +1,8 @@
 import { clamp, TAU } from './util.js';
+import { surfaceY } from './terrain.js';
+import { audio } from './audio.js';
 import { RANKS, PALETTES } from './constants.js';
-import { FONT, lw, dash, snap, segBar, brackets, inkReset, unit, W_FINE, W_RIB, W_OUT } from './cadRenderer.js';
+import { FONT, lw, dash, snap, segBar, brackets, inkReset, unit, line, W_FINE, W_RIB, W_OUT } from './cadRenderer.js';
 
 // Minimal avionics HUD. During combat all telemetry stays small and at 35–50% opacity so the
 // eye tracks the jet and incoming shells; only warnings (hull low, hit, banners) go to full.
@@ -117,7 +119,9 @@ export function drawHUD(ctx, g, w, h) {
 
   // ── secondary weapon ordnance meters (GTA V style AGM missiles & GBU bombs) ──
   if (play) {
-    const obx = snap(12);
+    // On touch screens the thumb pads own the bottom corners, so the ordnance readout moves to bottom-centre.
+    const touch = !!g.touch;
+    const obx = touch ? snap(w / 2 - 78) : snap(12);
     const oby = snap(h - 32);
     const mLocked = g.lock && g.lock.t >= 1;
     // Missile status
@@ -127,7 +131,7 @@ export function drawHUD(ctx, g, w, h) {
     txt(ctx, `GBU-12 [ ${P.bombs || 0} / ${P.maxBombs || 20} ]`, obx + 90, oby, 7, pal.light, 'left', 0.75);
     segBar(ctx, obx + 90, oby + 10, 68, 3, 10, (P.bombs || 0) / (P.maxBombs || 20), pal.light, pal.mid + '44', null);
     // Weapon control hint
-    txt(ctx, '[M/X] GUIDED MISSILE | [B/C] GRAVITY BOMB (TAP/HOLD) | [SPACE] 30MM', obx, oby + 18, 5.5, pal.light, 'left', 0.35);
+    if (!touch) txt(ctx, '[M/X] GUIDED MISSILE | [B/C] GRAVITY BOMB [TAP/HOLD] | [SPACE] 30MM', obx, oby + 18, 5.5, pal.light, 'left', 0.35);
 
     // ── score & combo ──
     txt(ctx, fmtN(g.score), w / 2, 8, 16, pal.light, 'center', 0.92);
@@ -145,6 +149,43 @@ export function drawHUD(ctx, g, w, h) {
     const hi = RANKS[g.rank] ?? lo + 1;
     const prog = g.rank >= RANKS.length ? 1 : clamp((g.score - lo) / (hi - lo), 0, 1);
     segBar(ctx, w - 12 - 70, snap(28), 70, 2, 14, prog, pal.light, pal.mid + '44', null);
+    txt(ctx, audio.muted ? 'SND OFF [N]' : 'SND ON [N]', w - 12, 34, 5.5, audio.muted ? pal.danger : pal.light, 'right', audio.muted ? 0.8 : 0.35);
+
+    // ── altitude tape: radar altimeter strip on the right edge, red floor = terrain hazard zone ──
+    if (w > 480 && h > 300) {
+      const tx = w - 40;
+      const ty0 = 84;
+      const ty1 = h - 58;
+      const maxA = 900;
+      const yAt = (a) => ty1 - (clamp(a, 0, maxA) / maxA) * (ty1 - ty0);
+      ctx.save();
+      ctx.strokeStyle = pal.light;
+      ctx.globalAlpha = 0.3;
+      lw(ctx, W_FINE);
+      line(ctx, tx, ty0, tx, ty1);
+      ctx.beginPath();
+      for (let a = 0; a <= maxA; a += 100) {
+        const y = snap(yAt(a));
+        ctx.moveTo(tx - 2, y);
+        ctx.lineTo(tx + (a % 300 === 0 ? 4 : 2), y);
+      }
+      ctx.stroke();
+      for (let a = 0; a <= maxA; a += 300) txt(ctx, String(a), tx - 5, yAt(a) - 3, 5, pal.light, 'right', 0.28);
+      ctx.fillStyle = pal.danger;
+      ctx.globalAlpha = 0.55;
+      ctx.fillRect(tx - 1.5, yAt(70), 3, ty1 - yAt(70));
+      const agl = Math.max(0, surfaceY(g, P.x) - P.y);
+      const danger = agl < 70;
+      const my = yAt(agl);
+      ctx.fillStyle = danger ? pal.danger : pal.hot;
+      ctx.strokeStyle = ctx.fillStyle;
+      ctx.globalAlpha = 0.95;
+      ctx.beginPath();
+      ctx.moveTo(tx + 1, my); ctx.lineTo(tx + 8, my - 3.5); ctx.lineTo(tx + 8, my + 3.5); ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+      txt(ctx, `RALT ${Math.round(agl)}M`, tx + 4, ty0 - 12, 5.5, danger ? pal.danger : pal.light, 'center', danger ? 0.95 : 0.45);
+    }
   } else if (menu) {
     const curPal = PALETTES[g.palIdx] || PALETTES[0];
     txt(ctx, curPal.name, w - 12, 8, 7, pal.hot, 'right', 0.5);
@@ -192,6 +233,8 @@ export function drawHUD(ctx, g, w, h) {
 
       txt(ctx, `IAS ${spd} KT`, jx - 80, jy - 3, 6.5, pal.light, 'right', 0.6);
       txt(ctx, `ALT ${altFt} FT`, jx + 80, jy - 3, 6.5, pal.light, 'left', 0.6);
+      txt(ctx, `THR ${Math.round((P.throttle || 0) * 100)}%${P.ab > 0.5 ? ' AB' : ''}`, jx - 80, jy + 6, 6, P.ab > 0.5 ? pal.hot : pal.light, 'right', P.ab > 0.5 ? 0.95 : 0.4);
+      if (P.stall && ((g.realT * 6) | 0) % 2 === 0) txt(ctx, 'STALL', jx + 80, jy + 6, 6.5, pal.danger, 'left', 0.95);
 
       // High-G turn arc (5G / 7G turn vector shown in reference image)
       const gLoad = Math.max(1, Math.round((Math.abs(P.av || 0) * spd) / 140));
@@ -266,8 +309,9 @@ export function drawHUD(ctx, g, w, h) {
     if (sx > 20 && sx < w - 20 && sy > 20 && sy < h - 20) continue;
     const dist = Math.hypot(e.x - P.x, e.y - P.y);
     if (dist > 1800) continue;
-    const cx = clamp(sx, 16, w - 16);
-    const cy = clamp(sy, 50, h - 16);
+    const maxX = w > 480 ? w - 84 : w - 16; // keep chevrons out of the altitude-tape lane on the right edge
+    const cx = clamp(sx, 16, maxX);
+    const cy = clamp(sy, 56, h - 16);
     const a = Math.atan2(sy - h / 2, sx - w / 2);
     ctx.save();
     ctx.translate(cx, cy);
@@ -280,7 +324,7 @@ export function drawHUD(ctx, g, w, h) {
     ctx.closePath();
     ctx.stroke();
     ctx.restore();
-    txt(ctx, `${k.toUpperCase()} ${Math.round(dist * 0.2)}M`, clamp(cx, 34, w - 34), cy + 8, 6, pal.light, 'center', 0.5);
+    txt(ctx, `${k.toUpperCase()} ${Math.round(dist * 0.2)}M`, clamp(cx, 34, maxX - 18), cy + 8, 6, pal.light, 'center', 0.5);
     shown++;
   }
   ctx.restore();

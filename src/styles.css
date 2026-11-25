@@ -141,6 +141,22 @@ h1 {
   box-shadow: 0 14px 44px rgba(0,0,0,0.65), inset 0 0 0 1px color-mix(in srgb, var(--hot) 30%, transparent);
   backdrop-filter: blur(8px);
 }
+.card-tag { display: block; margin-bottom: 6px; font: 700 10px 'Share Tech Mono', monospace; letter-spacing: 0.22em; color: var(--light); opacity: 0.55; }
+/* pause: dims the frozen scene so the card reads instantly, with CAD corner ticks */
+.scrim {
+  position: absolute; inset: 0; z-index: 50; pointer-events: none;
+  background:
+    repeating-linear-gradient(0deg, transparent 0 23px, color-mix(in srgb, var(--light) 5%, transparent) 23px 24px),
+    color-mix(in srgb, var(--dark) 52%, transparent);
+}
+.card.pause { z-index: 60; border-width: 1px; border-color: var(--light); }
+.card.pause::before, .card.pause::after {
+  content: ''; position: absolute; width: 16px; height: 16px; border: 2px solid var(--hot);
+}
+.card.pause::before { top: -4px; left: -4px; border-right: 0; border-bottom: 0; }
+.card.pause::after { bottom: -4px; right: -4px; border-left: 0; border-top: 0; }
+.pause-keys { margin: 16px 0 0; font-size: 11px; opacity: 0.7; letter-spacing: 0.06em; }
+.pause-keys b { border: 1px solid var(--mid); padding: 0 5px; font-size: 10px; }
 .card h2 { margin: 0 0 8px; font-size: 22px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--hot); }
 .card .score { margin: 6px 0 0; font-size: clamp(42px, 10vw, 64px); font-weight: 900; line-height: 1; color: var(--light); letter-spacing: 0.05em; }
 .card .best { margin: 8px 0 14px; }
@@ -454,8 +470,8 @@ dl div { text-align: center; }
 .pause-btn {
   pointer-events: auto;
   position: absolute;
-  top: max(16px, env(safe-area-inset-top));
-  left: max(16px, env(safe-area-inset-left));
+  top: calc(max(16px, env(safe-area-inset-top)) + 34px); /* below DEFCON / SND readout, clear of the hull + radar block */
+  right: max(16px, env(safe-area-inset-right));
   padding: 6px 14px;
   background: color-mix(in srgb, var(--dark) 80%, transparent);
   border: 1px solid color-mix(in srgb, var(--light) 40%, transparent);

@@ -595,7 +595,13 @@ function drawAggressorFlanker(ctx, pal, o, flip, ink, accent, S) {
 
 export function drawFighter(ctx, pal, o) {
   const { S, t, burn, steer } = o;
+  const ab = o.ab || 0; // afterburner 0..1 (distinct, hotter state)
   const flip = Math.cos(o.a) < 0 ? -1 : 1;
+  // roll-over animation: when the jet reverses, the airframe flattens through its edge and flips (never fully 0)
+  let fa = o.flipAnim === undefined ? flip : o.flipAnim;
+  if (Math.abs(fa) < 0.12) fa = fa < 0 ? -0.12 : 0.12;
+  // bank compression: the airframe flattens as it rolls into a turn
+  const bankSq = 1 - 0.17 * Math.abs(o.bank || 0);
   const ink = o.ink;
   const accent = o.accent ? pal.danger : null;
   const hullType = o.hull || 'std';
@@ -603,7 +609,7 @@ export function drawFighter(ctx, pal, o) {
   ctx.save();
   ctx.translate(o.x, o.y);
   ctx.rotate(o.a);
-  ctx.scale(S, S * flip);
+  ctx.scale(S, S * fa * bankSq);
   ctx.lineJoin = 'round';
 
   // CAD drafting centerline guide
@@ -615,20 +621,20 @@ export function drawFighter(ctx, pal, o) {
   // ── Twin afterburner plumes: tapered core, Mach shock diamonds ──
   const x0 = -22.8;
   if (burn > 0.03) {
-    const flick = 0.92 + 0.08 * Math.sin(t * 90 + o.x) + 0.05 * Math.sin(t * 37);
-    const Lf = (9 + 32 * burn) * flick;
-    const ap = 1.05 + 0.85 * burn;
+    const flick = 0.92 + (0.08 + 0.07 * ab) * Math.sin(t * 90 + o.x) + (0.05 + 0.05 * ab) * Math.sin(t * 37);
+    const Lf = (9 + 32 * burn + 26 * ab) * flick;
+    const ap = 1.05 + 0.85 * burn + 0.45 * ab;
     for (const yc of [-1.3, 1.7]) {
       ctx.fillStyle = o.enemy ? pal.danger : pal.hot;
       ctx.strokeStyle = o.enemy ? pal.danger : pal.hot;
       lw(ctx, 1, S);
-      ctx.globalAlpha = 0.35 * burn;
+      ctx.globalAlpha = (0.35 + 0.2 * ab) * burn;
       poly(ctx, [x0, yc - ap * 1.15, x0 - Lf, yc, x0, yc + ap * 1.15]);
       ctx.fill();
       ctx.globalAlpha = 0.95 * burn;
       ctx.stroke();
       ctx.fillStyle = pal.light;
-      poly(ctx, [x0, yc - ap * 0.55, x0 - Lf * 0.6, yc, x0, yc + ap * 0.55]);
+      poly(ctx, [x0, yc - ap * (0.55 + 0.35 * ab), x0 - Lf * (0.6 + 0.16 * ab), yc, x0, yc + ap * (0.55 + 0.35 * ab)]);
       ctx.fill();
       // Mach shock diamonds
       ctx.strokeStyle = pal.light;

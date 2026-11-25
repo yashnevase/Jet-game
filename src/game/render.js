@@ -4,7 +4,7 @@ import { DRAW } from './spritesEnemy.js';
 import { drawPlane } from './spritesPlayer.js';
 import { setUnit, segBar, inkReset } from './cadRenderer.js';
 import { drawBackdrop, drawIsland, drawWater } from './scene.js';
-import { updateLock, drawLock, drawPlayerTelemetry, drawThreatVectors, drawProjectiles } from './tactical.js';
+import { updateLock, drawLock, drawPlayerTelemetry, drawThreatVectors, drawProjectiles, drawDiegetic } from './tactical.js';
 import { drawHUD } from './hud.js';
 
 // ─────────────────────────────────────────────────────────────
@@ -99,6 +99,7 @@ export function render(g) {
 
   drawThreatVectors(ctx, g, seen);
   drawPlayerTelemetry(ctx, g);
+  drawDiegetic(ctx, g);
   drawProjectiles(ctx, g);
   g.fx.draw(ctx, pal, 1);
   g.fx.drawPopups(ctx, pal);

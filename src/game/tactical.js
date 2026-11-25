@@ -1,4 +1,5 @@
 import { clamp, angDiff, TAU } from './util.js';
+import { ORDNANCE } from './constants.js';
 import { surfaceY } from './terrain.js';
 import { playerMuzzle } from './spritesPlayer.js';
 import { jetMuzzle } from './spritesEnemy.js';
@@ -19,6 +20,18 @@ import {
 
 const M = 0.2; // world units → metres, the same factor the HUD uses
 const FT = 3.28;
+
+// Tapered motion tail: a thin triangle from a point `len` behind the head, widening to `w` at the head.
+function taper(ctx, x, y, ang, len, w) {
+  const c = Math.cos(ang);
+  const s = Math.sin(ang);
+  ctx.beginPath();
+  ctx.moveTo(x - c * len, y - s * len);
+  ctx.lineTo(x - s * w * 0.5, y + c * w * 0.5);
+  ctx.lineTo(x + s * w * 0.5, y - c * w * 0.5);
+  ctx.closePath();
+  ctx.fill();
+}
 
 const enemyVel = (e) => {
   if (e.kind === 'jet') return [Math.cos(e.a) * e.speed, Math.sin(e.a) * e.speed];
@@ -211,28 +224,136 @@ export function drawPlayerTelemetry(ctx, g) {
   inkReset(ctx);
 }
 
-// ── threat vectors: faint velocity arrows on fast air threats, fire lines when a jet is shooting ──
+// ── threat vectors: velocity arrows on fast air threats + unmistakable fire telegraphs ──
+// Any enemy with `warn` set is about to shoot: a blinking dashed aim line, a warning triangle above it.
 export function drawThreatVectors(ctx, g, seen) {
-  const { pal } = g;
+  const { pal, player: P } = g;
   ctx.save();
   for (const e of g.enemies) {
-    if (e.dying || (e.kind !== 'jet' && e.kind !== 'chopper') || !seen(e, 60)) continue;
-    const [vx, vy] = enemyVel(e);
-    const sp = Math.hypot(vx, vy);
-    if (sp < 40) continue;
-    const len = clamp(sp * 0.16, 8, 44);
-    ctx.strokeStyle = pal.danger;
-    ctx.globalAlpha = 0.42;
-    lw(ctx, W_RIB);
-    arrow(ctx, e.x, e.y, e.x + (vx / sp) * len, e.y + (vy / sp) * len, 2.8);
-    if (e.kind === 'jet' && (e.burstN > 0 || e.cd < 0.3) && e.state === 'attack') {
-      ctx.globalAlpha = 0.5;
-      lw(ctx, W_FINE);
-      dash(ctx, 2, 3);
-      const [jx, jy] = jetMuzzle(e);
-      line(ctx, jx, jy, jx + Math.cos(e.a) * 160, jy + Math.sin(e.a) * 160);
-      ctx.setLineDash([]);
+    if (e.dying || !seen(e, 60)) continue;
+    const air = e.kind === 'jet' || e.kind === 'chopper';
+    if (air) {
+      const [vx, vy] = enemyVel(e);
+      const sp = Math.hypot(vx, vy);
+      if (sp >= 40) {
+        const len = clamp(sp * 0.16, 8, 44);
+        ctx.strokeStyle = pal.danger;
+        ctx.globalAlpha = 0.42;
+        lw(ctx, W_RIB);
+        arrow(ctx, e.x, e.y, e.x + (vx / sp) * len, e.y + (vy / sp) * len, 2.8);
+      }
     }
+    if (e.warn) {
+      const on = ((g.realT * 16) | 0) % 2 === 0;
+      let ox = e.x;
+      let oy = e.y;
+      let ang;
+      if (e.kind === 'jet') {
+        [ox, oy] = jetMuzzle(e);
+        ang = e.a;
+      } else {
+        ang = Math.atan2(P.y - e.y, P.x - e.x);
+      }
+      const reach = e.kind === 'art' ? 0 : e.kind === 'jet' ? 230 : 170;
+      if (reach) {
+        ctx.strokeStyle = pal.danger;
+        ctx.globalAlpha = on ? 0.75 : 0.3;
+        lw(ctx, W_FINE * 1.4);
+        dash(ctx, 3, 3);
+        line(ctx, ox, oy, ox + Math.cos(ang) * reach, oy + Math.sin(ang) * reach);
+        ctx.setLineDash([]);
+      }
+      // warning triangle with "!" above the shooter
+      const ty = e.y - e.hh - 12;
+      ctx.globalAlpha = on ? 0.95 : 0.4;
+      ctx.strokeStyle = pal.danger;
+      lw(ctx, 1.1);
+      ctx.beginPath();
+      ctx.moveTo(e.x, ty - 5); ctx.lineTo(e.x + 5, ty + 3.5); ctx.lineTo(e.x - 5, ty + 3.5); ctx.closePath();
+      ctx.stroke();
+      label(ctx, '!', e.x, ty + 2.5, pal.danger, 6, 'center', ctx.globalAlpha);
+    }
+  }
+  ctx.restore();
+  inkReset(ctx);
+}
+
+// ── diegetic cues hugging the jet: ordnance arcs, bomb hold-charge, ripple pips, incoming-threat arcs ──
+export function drawDiegetic(ctx, g) {
+  const { pal, player: P } = g;
+  if (g.mode !== 'play' || !P.alive || P.dying) return;
+  ctx.save();
+  ctx.lineCap = 'butt';
+  const R = 30;
+  const seg = (a0, a1, r) => { ctx.beginPath(); ctx.arc(P.x, P.y, r, a0, a1); ctx.stroke(); };
+  const meter = (a0, a1, frac, dir, onCol, alpha, count = 10) => {
+    const span = (a1 - a0) / count;
+    const lit = Math.ceil(frac * count - 1e-6);
+    for (let i = 0; i < count; i++) {
+      const idx = dir > 0 ? i : count - 1 - i;
+      const on = idx < lit;
+      ctx.strokeStyle = on ? onCol : pal.mid;
+      ctx.globalAlpha = on ? alpha : 0.22;
+      lw(ctx, on ? 1.8 : 0.8);
+      seg(a0 + i * span + span * 0.12, a0 + (i + 1) * span - span * 0.12, R);
+    }
+  };
+  const dry = P.dry > 0 && ((g.realT * 20) | 0) % 2 === 0;
+  // AGM-73: bottom-left arc, dims while the launcher cools down
+  const mReady = 1 - clamp(P.missileCd / ORDNANCE.MISSILE_CD, 0, 1);
+  const locked = g.lock && g.lock.t >= 1;
+  meter(0.56 * Math.PI, 0.94 * Math.PI, (P.missiles || 0) / (P.maxMissiles || 20), -1, dry ? pal.danger : locked ? pal.danger : pal.hot, 0.35 + 0.5 * mReady);
+  // GBU-12: bottom-right arc
+  meter(0.06 * Math.PI, 0.44 * Math.PI, (P.bombs || 0) / (P.maxBombs || 25), 1, dry ? pal.danger : pal.light, 0.35 + 0.5 * (1 - clamp(P.bombCd / ORDNANCE.BOMB_TAP_CD, 0, 1)));
+  // hold-to-ripple charge: an outer arc fills over the hold window, then the ripple pips take over
+  if (P.bombHeld && !P.bombSpent && P.bombHoldT > 0.04) {
+    const f = clamp(P.bombHoldT / ORDNANCE.BOMB_HOLD_T, 0, 1);
+    ctx.strokeStyle = pal.hot;
+    ctx.globalAlpha = 0.9;
+    lw(ctx, 1.4);
+    seg(0.06 * Math.PI, 0.06 * Math.PI + 0.38 * Math.PI * f, R + 4);
+  }
+  if (P.bombHeld && P.bombSpent) {
+    const total = ORDNANCE.BOMB_SALVO;
+    const done = total - P.bombSalvoN;
+    ctx.fillStyle = pal.hot;
+    ctx.strokeStyle = pal.hot;
+    lw(ctx, 0.8);
+    for (let i = 0; i < total; i++) {
+      const px = P.x + (i - (total - 1) / 2) * 7;
+      const py = P.y + R + 8;
+      diamond(ctx, px, py, 2.2, 2.2);
+      ctx.globalAlpha = i < done ? 1 : 0.35;
+      if (i < done) ctx.fill();
+      else ctx.stroke();
+    }
+  }
+  // lock progress: a crisp tick ring that closes as the seeker acquires
+  if (g.lock && !locked) {
+    ctx.strokeStyle = pal.hot;
+    ctx.globalAlpha = 0.8;
+    lw(ctx, 1.2);
+    seg(-Math.PI / 2, -Math.PI / 2 + TAU * g.lock.t, R + 9);
+  }
+
+  // incoming rounds: red arcs on the jet's bearing to each threat; thicker and blinking as impact nears
+  for (const t of g.threats) {
+    const blink = t.urgency > 0.6 ? (((g.realT * 14) | 0) % 2 === 0 ? 1 : 0.35) : 1;
+    const half = 0.16 + 0.26 * t.urgency;
+    ctx.strokeStyle = pal.danger;
+    ctx.globalAlpha = (0.45 + 0.5 * t.urgency) * blink;
+    lw(ctx, 1 + 2.2 * t.urgency);
+    seg(t.ang - half, t.ang + half, R + 17);
+    const cx = P.x + Math.cos(t.ang) * (R + 25);
+    const cy = P.y + Math.sin(t.ang) * (R + 25);
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(t.ang + Math.PI);
+    lw(ctx, 1);
+    ctx.beginPath();
+    ctx.moveTo(0, 0); ctx.lineTo(5, -3); ctx.lineTo(5, 3); ctx.closePath();
+    ctx.stroke();
+    ctx.restore();
   }
   ctx.restore();
   inkReset(ctx);
@@ -290,6 +411,8 @@ export function drawProjectiles(ctx, g) {
     const heavy = b.size > 2;
     const Ln = clamp(sp * 0.032, 10, 34) * (heavy ? 1.25 : 1);
     ctx.fillStyle = pal.hot;
+    ctx.globalAlpha = 0.22;
+    taper(ctx, b.x, b.y, ang, Ln * 3.1, heavy ? 3.0 : 1.7);
     ctx.globalAlpha = 0.85;
     needle(ctx, b.x, b.y, ang, Ln, heavy ? 3.6 : 2.2);
     ctx.fillStyle = pal.light;
@@ -316,12 +439,18 @@ export function drawProjectiles(ctx, g) {
       ctx.translate(m.x, m.y);
       ctx.rotate(m.a);
 
-      // Rocket motor flame
-      ctx.fillStyle = pal.hot;
-      ctx.strokeStyle = pal.hot;
-      lw(ctx, 1);
-      diamond(ctx, -8, 0, 4, 2.2);
-      ctx.fill();
+      // Rocket motor flame: flickers once the motor is lit (cold coast before ignition)
+      if (m.lit) {
+        const fl = 0.8 + 0.35 * Math.sin(g.realT * 120 + m.x);
+        ctx.fillStyle = pal.hot;
+        ctx.strokeStyle = pal.hot;
+        lw(ctx, 1);
+        diamond(ctx, -9 - 3 * fl, 0, 5.5 * fl, 2.3);
+        ctx.fill();
+        ctx.fillStyle = pal.light;
+        diamond(ctx, -7.5, 0, 2.4 * fl, 1.1);
+        ctx.fill();
+      }
 
       // Sleek missile body
       ctx.fillStyle = pal.fill;
@@ -422,6 +551,8 @@ export function drawProjectiles(ctx, g) {
       const sp = Math.hypot(b.vx, b.vy);
       const ang = Math.atan2(b.vy, b.vx);
       ctx.fillStyle = pal.danger;
+      ctx.globalAlpha = 0.26;
+      taper(ctx, b.x, b.y, ang, clamp(sp * 0.045, 8, 22) * 2.6, 2.4);
       ctx.globalAlpha = 0.85;
       needle(ctx, b.x, b.y, ang, clamp(sp * 0.045, 8, 22), 2.6);
       ctx.fillStyle = pal.light;

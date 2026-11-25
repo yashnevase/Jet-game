@@ -1,6 +1,7 @@
 import { SEA_Y } from './constants.js';
 import { rnd, TAU, lerp } from './util.js';
 import { FONT, starburst, diamond, lw, dash } from './cadRenderer.js';
+import { audio } from './audio.js';
 
 // ─────────────────────────────────────────────────────────────
 //  vfxSystem: geometric CAD effects. No soft circles, no blobs.
@@ -22,6 +23,7 @@ export class FX {
     this.pop = [];
     this.streams = new Map(); // contrail ribbons keyed by owner
     this.dist = []; // visual-only water disturbances {x, amp, age}
+    this.warps = []; // grid-warp shockwaves {x, y, amp, age}: the CAD grid ripples near big blasts
   }
 
   clear() {
@@ -29,6 +31,7 @@ export class FX {
     this.pop.length = 0;
     this.streams.clear();
     this.dist.length = 0;
+    this.warps.length = 0;
   }
 
   add(o) {
@@ -69,6 +72,11 @@ export class FX {
       p.life -= dt;
       p.y -= 20 * dt;
       if (p.life <= 0) this.pop.splice(i, 1);
+    }
+    for (let i = this.warps.length - 1; i >= 0; i--) {
+      const w = this.warps[i];
+      w.age += dt;
+      if (w.age > 1.1) this.warps.splice(i, 1);
     }
     for (let i = this.dist.length - 1; i >= 0; i--) {
       const d = this.dist[i];
@@ -344,16 +352,50 @@ export class FX {
     }
     if (y > SEA_Y - 14 * s) this.splash(x, 0.8 * s);
     g.addShake(0.12 + 0.17 * s);
-    if (s >= 1) g.hitstop = Math.max(g.hitstop, 0.025 + 0.025 * Math.min(s, 3));
+    if (s >= 1) g.freeze(0.025 + 0.01 * Math.min(s, 3));
     if (s >= 2.2) g.flash = Math.max(g.flash, 0.45);
     if (s >= 1.3) g.invertF = Math.max(g.invertF || 0, 2); // 2-frame inverted flash on heavy kills
     // directional trauma: nearer blasts hit harder
     const d = Math.hypot(g.player.x - x, g.player.y - y);
+    audio.explode(s, d);
+    if (s >= 0.9) this.warp(x, y, s);
     if (d < 260) {
       const k = (1 - d / 260) * Math.min(s, 2.5);
       g.addShake(k * 0.25);
       if (g.addKick) g.addKick((g.player.x - x) / (d || 1), (g.player.y - y) / (d || 1), k);
     }
+  }
+
+  // spatial shockwave: the background grid bulges outward from the blast (rendered in scene.drawBackdrop)
+  warp(x, y, s) {
+    if (this.warps.length >= 6) this.warps.shift();
+    this.warps.push({ x, y, amp: Math.min(16, 5 + 4.5 * s), age: 0 });
+  }
+
+  // persistent wireframe wreckage: chunks and girders that tumble, trail sparks and splash into the sea
+  wreck(x, y, hw, hh, vx = 0, vy = 0, big = 1) {
+    const n = Math.min(14, 3 + Math.round((hw / 9) * big));
+    for (let i = 0; i < n; i++) {
+      const a = rnd(0, TAU);
+      const sp = rnd(30, 170) * (0.6 + big * 0.35);
+      const ox = rnd(-hw, hw) * 0.8;
+      const oy = rnd(-hh, hh) * 0.8;
+      this.add({
+        k: i % 3 === 0 ? 'rect' : 'poly', x: x + ox, y: y + oy,
+        vx: vx * 0.35 + Math.cos(a) * sp, vy: vy * 0.25 + Math.sin(a) * sp - 70,
+        g: 430, drag: 0.35, r: rnd(0, TAU), vr: rnd(-9, 9), s0: rnd(2.6, 6.5) * (0.8 + big * 0.3),
+        life: rnd(1.5, 2.6), ramp: ['light', 'light', 'mid'], fade: true, water: true, z: 0,
+      });
+    }
+  }
+
+  // bomb release: pylon tick ring + two downward tick marks (a "REL" tag on the first of a ripple)
+  release(x, y, ripple = 0) {
+    this.add({ k: 'ring', x, y, life: 0.16, s0: 2, s1: 9, w0: 1.2, ramp: ['hot', 'light'], z: 1 });
+    for (const dx of [-3, 3]) {
+      this.add({ k: 'tracer', x: x + dx, y, vx: 0, vy: 70, life: 0.14, ramp: ['hot', 'light'], w: 1, z: 1 });
+    }
+    if (ripple === 0) this.add({ k: 'cadShock', x, y, life: 0.3, s0: 2, s1: 11, ramp: ['hot'], label: 'REL', z: 1 });
   }
 
   // water impact: ripple ellipses + short vertical spray lines + hollow puffs
@@ -421,9 +463,11 @@ export class FX {
     this.add({ k: kind, x, y, life, s0: 4, s1: radius, w0: 1.8, ramp: ['light', 'hot'], z: 1 });
   }
 
-  casing(x, y, ang) {
+  // spent shell casing: ejected sideways-up, tumbles under gravity with light drag
+  casing(x, y, ang, size = 1) {
     const a = ang - (Math.PI / 2) * (Math.cos(ang) >= 0 ? 1 : -1) + rnd(-0.4, 0.4);
-    this.add({ k: 'rect', x, y, vx: Math.cos(a) * 60, vy: Math.sin(a) * 60 - 20, g: 400, r: 0, vr: rnd(-20, 20), s0: 0.9, life: 0.7, ramp: ['hot', 'mid'], water: true, z: 0 });
+    const sp = rnd(45, 95);
+    this.add({ k: 'rect', x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 25, g: 420, drag: 0.5, r: rnd(0, 3), vr: rnd(-26, 26), s0: 0.9 * size, life: rnd(0.8, 1.2), ramp: ['hot', 'mid'], water: true, z: 0 });
   }
 
   // armour impact: sharp vector sparks + small starburst

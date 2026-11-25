@@ -98,6 +98,7 @@ export default function App() {
   const [themeIdx, setThemeIdx] = useState(0);
   const [best, setBest] = useState(0);
   const [touch, setTouch] = useState(false);
+  const [muted, setMuted] = useState(audio.muted);
 
   useEffect(() => {
     const g = new Game(canvas.current, {
@@ -108,6 +109,7 @@ export default function App() {
         }
         setScreen((prev) => (prev === 'loadout' && m === 'menu' ? prev : m));
       },
+      onMute: (m) => setMuted(m),
       onPalette: (pal) => {
         applyPalette(pal);
         if (game.current) setThemeIdx(game.current.palIdx);
@@ -126,7 +128,10 @@ export default function App() {
     fit();
     const ro = new ResizeObserver(fit);
     ro.observe(wrap.current);
-    const onTouch = () => setTouch(true);
+    const onTouch = () => {
+      setTouch(true);
+      g.touch = true;
+    };
     window.addEventListener('touchstart', onTouch, { once: true, passive: true });
     g.attach();
     return () => {
@@ -153,6 +158,11 @@ export default function App() {
     const list = key === 'gun' ? GUNS : key === 'hull' ? HULLS : ENGINES;
     const it = list.find((x) => x.id === id) || list[0];
     setPreview({ category: key, item: it });
+  };
+
+  const toggleSound = () => {
+    const m = audio.toggleMute();
+    setMuted(m);
   };
 
   const fly = () => {
@@ -216,10 +226,13 @@ export default function App() {
             <button className="btn" onClick={cycleTheme} title="Switch Blueprint / Chalkboard Theme">
               CAD: {PALETTES[themeIdx]?.name || 'CHALK'}
             </button>
+            <button className="btn" onClick={toggleSound} aria-pressed={muted} title="Toggle sound (N)">
+              SND: {muted ? 'OFF' : 'ON'}
+            </button>
           </div>
           {best > 0 && <p className="best">Record Score: {fmt(best)}</p>}
           <p className="keys">
-            <b>←/→</b> or <b>A/D</b> pitch &nbsp; <b>↑</b> or <b>W</b> thrust &nbsp; <b>Space</b> cannon &nbsp; <b>M/X</b> homing missile &nbsp; <b>B/C</b> drop bomb &nbsp; <b>P</b> pause
+            <b>←/→</b> or <b>A/D</b> pitch &nbsp; <b>↑</b> or <b>W</b> thrust &nbsp; <b>Space</b> cannon &nbsp; <b>M/X</b> homing missile &nbsp; <b>B/C</b> bomb (tap / hold) &nbsp; <b>N</b> sound &nbsp; <b>P</b> pause
           </p>
           <p className="sub-hint">
             ▶ Click <b>SCRAMBLE FLIGHT</b> or press <b>SPACE / ENTER</b> to deploy flight
@@ -284,13 +297,19 @@ export default function App() {
       )}
 
       {screen === 'paused' && (
-        <section className="card">
-          <h2>Paused</h2>
-          <div className="row">
-            <button className="btn big" onClick={() => { audio.uiClick(); game.current.togglePause(); }}>Resume</button>
-            <button className="btn" onClick={toMenu}>Quit</button>
-          </div>
-        </section>
+        <>
+          <div className="scrim" aria-hidden="true" />
+          <section className="card pause" role="dialog" aria-label="Paused">
+            <span className="card-tag">// FLIGHT SUSPENDED //</span>
+            <h2>Paused</h2>
+            <div className="row">
+              <button className="btn big" onClick={() => game.current.togglePause()} autoFocus>Resume</button>
+              <button className="btn" onClick={toMenu}>Quit</button>
+              <button className="btn" onClick={toggleSound} aria-pressed={muted}>SND: {muted ? 'OFF' : 'ON'}</button>
+            </div>
+            <p className="pause-keys"><b>P</b>/<b>Esc</b> resume &nbsp; <b>N</b> sound</p>
+          </section>
+        </>
       )}
 
       {screen === 'over' && summary && (

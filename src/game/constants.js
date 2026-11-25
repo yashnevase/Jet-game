@@ -23,6 +23,22 @@ export const ORDNANCE = {
   BOMB_GRAV: 550,
   BOMB_DMG: 65,
   BOMB_RADIUS: 52,
+  BOMB_SALVO: 3,        // extra bombs in a held ripple (first bomb drops on press)
+  BOMB_RIPPLE_T: 0.11,  // seconds between ripple releases
+  BOMB_HOLD_T: 0.24,    // hold longer than this to convert a tap into a ripple
+  BOMB_TAP_CD: 0.3,
+
+  MISSILE_CD: 0.6,      // one missile per press (edge-triggered), then this lockout
+  MISSILE_MOTOR_DELAY: 0.14, // ejector coast before the motor lights
+};
+
+// Combat feel & fairness
+export const COMBAT = {
+  HITSTOP_MAX: 0.045,   // micro-freeze ceiling (s)
+  HITSTOP_GAP: 0.16,    // min real-time gap between freezes so flow never stutters
+  HULL_INV: 0.45,       // post-hit invulnerability (s): no multi-frame health drain
+  CLOSE_RANGE: 170,     // kills inside this range earn the CLOSE bonus
+  LOW_ALT: 70,          // kills while this close to sea / terrain earn the LOW bonus
 };
 
 // Flight model. Arcade, not simulation — but with real stall / lift / momentum.
@@ -37,6 +53,16 @@ export const PHYS = {
   PLANE_R: 9,       // collision radius
   GROUND_EFFECT: 52,// ground effect aerodynamic cushion distance (px)
   PULL_UP_BOOST: 1.35, // aerodynamic elevator authority scaling during high-speed pull-up
+  SPOOL_UP: 3.2,    // throttle spool rate while thrusting (1/s)
+  SPOOL_DOWN: 1.8,  // throttle spool rate when idle
+  AB_ENGAGE: 0.45,  // seconds of continuous thrust before the afterburner lights
+  AB_THRUST: 1.3,   // afterburner thrust multiplier
+  AB_SPEED: 1.06,   // afterburner raises top speed
+  DIVE_ACCEL: 0.42, // extra gravity-fed acceleration while the nose is down (× G)
+  DIVE_OVERSPEED: 0.2, // fraction above max speed a dive can reach
+  CLIMB_BLEED: 0.9, // extra drag (1/s) on a steep sustained climb
+  STALL_SPEED: 175, // below this the stall buzzer sounds
+  PITCH_DAMP: 11,   // pitch-rate smoothing (lower = heavier nose)
 };
 
 // ── Loadout parts ───────────────────────────────────────────
